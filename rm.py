@@ -260,3 +260,41 @@ for year in sorted(df["Year"].unique()):
 output_path = r"Roadmap_by_Year.pptx"
 prs.save(output_path)
 print(f"Saved → {output_path}")
+
+
+
+
+
+
+
+from calendar import monthrange
+
+shape_map     = {"Regular": MSO_SHAPE.OVAL, "Major": MSO_SHAPE.STAR_5_POINT}
+status_colors = { … }
+
+for _, row in df_year.iterrows():
+    dt        = row["Milestone Date"]
+    month_idx = dt.month - 1
+    dim       = monthrange(dt.year, dt.month)[1]
+    day_frac  = (dt.day - 1) / float(dim - 1)
+
+    x = left_origin + (month_idx + day_frac) * col_w - Inches(0.15)
+
+    yi = groups.index(row["Group"])
+    y  = top_origin + header_h + yi*row_h + row_h/2 - Inches(0.15)
+
+    shp = slide.shapes.add_shape(
+        shape_map[row["Milestone Type"]],
+        x, y, Inches(0.3), Inches(0.3)
+    )
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = status_colors[row["Milestone Status"]]
+    shp.line.color.rgb       = RGBColor(0,0,0)
+
+    lbl = slide.shapes.add_textbox(
+        x + Inches(0.4), y - Inches(0.1),
+        Inches(2), Inches(0.3)
+    )
+    tf = lbl.text_frame
+    tf.text                  = row["Milestone Title"]
+    tf.paragraphs[0].font.size = Pt(12)
