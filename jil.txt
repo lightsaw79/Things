@@ -1,43 +1,45 @@
-/* ---------------- demo_box_thursday_hourly ---------------- */
+/* ---------------- BOX JOB ---------------- */
 
-insert_job: demo_box_thursday_hourly job_type: BOX
+insert_job: demo_box_thursday job_type: BOX
 owner: syssamad
 permission: mx,gx,wx
 date_conditions: 1
 days_of_week: th
-start_times: "00:00,01:00,02:00,03:00,04:00,05:00,06:00,07:00,08:00,09:00,10:00,11:00,12:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00,21:00,22:00,23:00"
-description: "Box runs every hour on Thursdays"
+start_times: "00:00"
+description: "Runs only on Thursdays"
 timezone: NewYork
 
-/* ---------------- job_a_print_hello ---------------- */
+/* ---------------- JOB A ---------------- */
 
 insert_job: job_a_print_hello job_type: CMD
-box_name: demo_box_thursday_hourly
+box_name: demo_box_thursday
 command: /apps/samd/actimize/package_utilities/common/bin/job_a_print_hello.sh
 machine: isamudesvaispir.barcapint.com
 owner: syssamad
 permission: mx,gx,wx
 description: "Prints Hello World 10 times"
+date_conditions: 1
+days_of_week: th
+start_times: "00:00,01:00,02:00,03:00,04:00,05:00,06:00,07:00,08:00,09:00,10:00,11:00,12:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00,21:00,22:00,23:00"
 std_out_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.log"
 std_err_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.err"
 alarm_if_terminated: 1
 profile: "/apps/samd/actimize/package_utilities/common/bin/autosys.sh"
-date_conditions: 0
 timezone: NewYork
 
-/* ---------------- job_b_after_a ---------------- */
+/* ---------------- JOB B ---------------- */
 
 insert_job: job_b_after_a job_type: CMD
-box_name: demo_box_thursday_hourly
+box_name: demo_box_thursday
 command: /apps/samd/actimize/package_utilities/common/bin/job_b_after_a.sh
 machine: isamudesvaispir.barcapint.com
 owner: syssamad
 permission: mx,gx,wx
 description: "Prints 10 lines after job A"
 condition: job_a_print_hello_s
+date_conditions: 0
 std_out_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.log"
 std_err_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.err"
 alarm_if_terminated: 1
 profile: "/apps/samd/actimize/package_utilities/common/bin/autosys.sh"
-date_conditions: 0
 timezone: NewYork
