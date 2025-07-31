@@ -1,35 +1,43 @@
-/* ---------------- BOX JOB ---------------- */
+/* ---------------- demo_box_thursday_hourly ---------------- */
 
-insert_job: demo_box_every_thursday_hourly job_type: BOX
-owner: aryaman
+insert_job: demo_box_thursday_hourly job_type: BOX
+owner: syssamad
+permission: mx,gx,wx
 date_conditions: 1
 days_of_week: th
-start_mins: 00
 start_times: "00:00,01:00,02:00,03:00,04:00,05:00,06:00,07:00,08:00,09:00,10:00,11:00,12:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00,21:00,22:00,23:00"
-description: "Runs every hour on Thursdays"
+description: "Box runs every hour on Thursdays"
 timezone: NewYork
 
-/* ---------------- JOB A ---------------- */
+/* ---------------- job_a_print_hello ---------------- */
 
 insert_job: job_a_print_hello job_type: CMD
-box_name: demo_box_every_thursday_hourly
-command: /home/aryaman/autosys_demo/job_a_print_hello.sh
-machine: dev-autosys-01
-owner: aryaman
-std_out_file: /home/aryaman/autosys_demo/logs/job_a.out
-std_err_file: /home/aryaman/autosys_demo/logs/job_a.err
+box_name: demo_box_thursday_hourly
+command: /apps/samd/actimize/package_utilities/common/bin/job_a_print_hello.sh
+machine: isamudesvaispir.barcapint.com
+owner: syssamad
+permission: mx,gx,wx
 description: "Prints Hello World 10 times"
+std_out_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.log"
+std_err_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.err"
+alarm_if_terminated: 1
+profile: "/apps/samd/actimize/package_utilities/common/bin/autosys.sh"
 date_conditions: 0
+timezone: NewYork
 
-/* ---------------- JOB B ---------------- */
+/* ---------------- job_b_after_a ---------------- */
 
 insert_job: job_b_after_a job_type: CMD
-box_name: demo_box_every_thursday_hourly
-command: /home/aryaman/autosys_demo/job_b_after_a.sh
-machine: dev-autosys-01
-owner: aryaman
-std_out_file: /home/aryaman/autosys_demo/logs/job_b.out
-std_err_file: /home/aryaman/autosys_demo/logs/job_b.err
-description: "Prints 10 lines after Job A"
+box_name: demo_box_thursday_hourly
+command: /apps/samd/actimize/package_utilities/common/bin/job_b_after_a.sh
+machine: isamudesvaispir.barcapint.com
+owner: syssamad
+permission: mx,gx,wx
+description: "Prints 10 lines after job A"
 condition: job_a_print_hello_s
+std_out_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.log"
+std_err_file: "$ERRSPATH/$AUTO_JOB_NAME_$BCUS_TS.err"
+alarm_if_terminated: 1
+profile: "/apps/samd/actimize/package_utilities/common/bin/autosys.sh"
 date_conditions: 0
+timezone: NewYork
