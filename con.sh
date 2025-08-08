@@ -1,17 +1,21 @@
 #!/bin/ksh
 # -----------------------------------------------------------------------------
-# autosys_controller.ksh  (ORG STYLE, EXTREME DEBUG)
-# Flow (hourly, controller owns cadence):
+# autosys_controller.ksh  — ORG STYLE, EXTREME DEBUG
+# Hourly flow (controller owns cadence for <BOX_NAME>):
 #   1) autosys_get_status.ksh <BOX> <APP_ID> <BUS_DATE> [GET_EXTRA]
 #   2) autosys_reset.ksh     <BOX> <APP_ID> <BUS_DATE> [RESET_EXTRA]  -> INACTIVE
-#   3) ${AUTOSYS_RESET_DIR}/sendevent -P 1 -E STARTJOB -J <BOX>       -> start now
-# Exits: 90 env missing, 91/92/93 missing binaries, 11/12/13 step fails, 0 OK
+#   3) ${AUTOSYS_RESET_DIR}/sendevent -P 1 -E STARTJOB -J <BOX>       -> Start now
+#
+# Exit codes:
+#   0=OK, 11=get_status failed, 12=reset failed, 13=start failed,
+#   90=ENV missing, 91/92/93=required binary missing, 97=args missing,
+#   98=ExecSql checker found matches (non-fatal if disabled), 99=internal.
 # -----------------------------------------------------------------------------
 
-# Be strict but don’t die from errexit in sourced env
+# --- be strict but don't die on errexit inherited from profiles ---
 set +e
 
-# --- Environment (org standard) ---
+# --- Environment (ORG STANDARD) ---
 export ENV_FILE=/apps/samd/actimize/package_utilities/common/config/sam8.env
 if [ ! -f "$ENV_FILE" ]; then
   echo "ERROR: ENV_FILE not found: $ENV_FILE" >&2
@@ -19,25 +23,40 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 . "$ENV_FILE"
 
-# --- Args ---
+# --- Arguments ---
 BOX_NAME=$1
 APP_ID=$2
 BUS_DATE_PARAM=$3
-GET_EXTRA="$4"     # optional: extra flags for get_status
-RESET_EXTRA="$5"   # optional: extra flags for reset
+GET_EXTRA="$4"     # optional extra flags for get_status (string)
+RESET_EXTRA="$5"   # optional extra flags for reset (string)
+
+# --- Optional knobs (can be passed via env or JIL profile) ---
+: "${CTRL_ENABLE_CHECKER:=1}"   # 1=scan ExecSql logs, 0=skip
+: "${CTRL_GREPPAT:='(ORA-[0-9]+|SQLSTATE|^ERROR| ERROR |FATAL|EXCEPTION|Abend|Segmentation fault|command not found|RETURN CODE:[1-9]|JOBFAILURE)'}"
+: "${CTRL_WHITELIST:='No errors found|0 errors|RETURN CODE:0|NOT an error'}"  # pipe-separated
+: "${CTRL_HEAD:=80}"            # lines for head dump
+: "${CTRL_TAIL:=80}"            # lines for tail dump
+
 CATEGORY_ID=1
 
-# --- Runtime / log names ---
+# --- Validate args early ---
+if [ -z "$BOX_NAME" ] || [ -z "$APP_ID" ] || [ -z "$BUS_DATE_PARAM" ]; then
+  echo "USAGE: $0 <BOX_NAME> <APP_ID> <BUS_DATE_PARAM> [GET_EXTRA] [RESET_EXTRA]" >&2
+  exit 97
+fi
+
+# --- Names / runtime ---
 SCRIPT_NAME=`basename $0 | cut -d'.' -f1`
 HOSTNAME_FQDN=`hostname 2>/dev/null || uname -n`
 RUN_USER=`id -un 2>/dev/null || whoami`
 TIMESTAMP=`date +"%Y%m%d%H%M%S"`
 
+# --- Logs ---
 CTRL_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.log"
 CTRL_ERR="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.err.log"
 START_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_start_${TIMESTAMP}.log"
 
-# --- Paths from env (org conventions) ---
+# --- Paths from env (ORG CONVENTIONS) ---
 GET_STATUS_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_get_status.ksh
 RESET_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_reset.ksh
 SENDEVENT_BIN=${AUTOSYS_RESET_DIR}/sendevent
@@ -119,10 +138,13 @@ dump_file_info() {
   echo "AUTOREP_WRAPPER=$AUTOREP_WRAPPER"
   echo "RAW_AUTOREP=$RAW_AUTOREP"
   echo "PATH=$PATH"
+  echo "CTRL_ENABLE_CHECKER=$CTRL_ENABLE_CHECKER"
+  echo "CTRL_GREPPAT=$CTRL_GREPPAT"
+  echo "CTRL_WHITELIST=$CTRL_WHITELIST"
   echo "========================"
 } | tee -a "$CTRL_LOG"
 
-# --- Existence checks (fail fast with details) ---
+# --- Existence/perm checks (fail-fast, verbose) ---
 [ -x "$GET_STATUS_SH" ] || { fail "missing $GET_STATUS_SH"; dump_file_info "$GET_STATUS_SH"; exit 91; }
 [ -x "$RESET_SH"     ] || { fail "missing $RESET_SH";     dump_file_info "$RESET_SH";     exit 92; }
 [ -x "$SENDEVENT_BIN" ] || { fail "missing $SENDEVENT_BIN";                                 exit 93; }
@@ -131,15 +153,23 @@ dump_file_info "$GET_STATUS_SH"
 dump_file_info "$RESET_SH"
 dump_file_info "$SENDEVENT_BIN"
 
-# --- Audit start (non-fatal wrappers) ---
+# --- Enable xtrace into our log (everything echoed) ---
+# (ksh: redirect FD 19 to our log; then send xtrace there)
+exec 19>>"$CTRL_LOG"
+export PS4='+ ${FUNCNAME:-main}():${LINENO}: '
+set -x
+exec 2> >(tee -a "$CTRL_ERR" >&2)
+
+# --- Audit start (non-fatal) ---
 safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 93 1 "Execution Started $SCRIPT_NAME for $BOX_NAME"
 safe_chk_start "$APP_ID" "$CATEGORY_ID" "$BUS_DATE_PARAM" "$CALNDR_CD" "$RE_RUN_OVERRIDE" "$RE_RUN_MSG" "$GLBL_OVERRIDE" "$GLBL_RE_RUN_MSG"
 
-# --- Status before actions ---
-CUR_ST=`get_box_status`
+# --- Status BEFORE ---
+CUR_ST=`get_box_status`; set +x
 logf "CURRENT BOX STATUS [$BOX_NAME] = ${CUR_ST:-UNKNOWN}"
+set -x
 
-# --- 1) get_status ---
+# --- 1) GET_STATUS ---
 if [ -n "$GET_EXTRA" ]; then
   run_cmd "get_status" "$GET_STATUS_SH" "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM" $GET_EXTRA
 else
@@ -147,12 +177,15 @@ else
 fi
 RC=$?
 if [ $RC -ne 0 ]; then
+  set +x
+  fail "autosys_get_status.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (get_status failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
   exit 11
 fi
+set -x
 
-# --- 2) reset ---
+# --- 2) RESET ---
 if [ -n "$RESET_EXTRA" ]; then
   run_cmd "reset" "$RESET_SH" "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM" $RESET_EXTRA
 else
@@ -160,53 +193,90 @@ else
 fi
 RC=$?
 if [ $RC -ne 0 ]; then
+  set +x
+  fail "autosys_reset.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (reset failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
   exit 12
 fi
 
+set +x
 POST_RESET_ST=`get_box_status`
 logf "POST-RESET BOX STATUS [$BOX_NAME] = ${POST_RESET_ST:-UNKNOWN}"
+set -x
 
-# --- 3) Start box now (event-driven) ---
+# --- 3) START BOX NOW (event-driven; no calendars on box) ---
 run_cmd "start_box" "$SENDEVENT_BIN" -P 1 -E STARTJOB -J "${BOX_NAME}"
 RC=$?
 if [ $RC -ne 0 ]; then
+  set +x
+  fail "STARTJOB ${BOX_NAME} failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (start failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
   exit 13
 fi
 
+set +x
 AFTER_START_ST=`get_box_status`
 logf "AFTER-START BOX STATUS [$BOX_NAME] = ${AFTER_START_ST:-UNKNOWN}"
+set -x
 
-# --- CHECK_ERROR style deep dive: show WHY RC=1 happens post-run ---
-# Find latest ExecSql log your org scanner looks at
-LATEST_EXECLOG=`ls -1t /apps/samd/actimize/package_utilities/common/Log/ExecSql.*.log 2>/dev/null | head -1`
-if [ -n "$LATEST_EXECLOG" ]; then
-  logf "CHECK_ERROR: Latest ExecSql log is: $LATEST_EXECLOG"
-  dump_file_info "$LATEST_EXECLOG"
+# --- ExecSql checker deep dive (WHY RC=1) ---
+if [ "$CTRL_ENABLE_CHECKER" = "1" ]; then
+  LATEST_EXECLOG=`ls -1t /apps/samd/actimize/package_utilities/common/Log/ExecSql.*.log 2>/dev/null | head -1`
+  set +x
+  if [ -n "$LATEST_EXECLOG" ]; then
+    logf "CHECK_ERROR: Latest ExecSql log: $LATEST_EXECLOG"
+    dump_file_info "$LATEST_EXECLOG"
+    logf "CHECK_ERROR: Pattern: $CTRL_GREPPAT"
+    logf "CHECK_ERROR: Whitelist: $CTRL_WHITELIST"
 
-  # Patterns your org typically trips on (tweak if needed)
-  CE_PAT='(ORA-[0-9]+|SQLSTATE|^ERROR| ERROR |FATAL|EXCEPTION|Traceback|Abend|Segmentation fault|command not found|RETURN CODE:[1-9]|JOBFAILURE)'
-  logf "CHECK_ERROR: Using grep -nE pattern: $CE_PAT"
+    {
+      echo "----- ExecSql HEAD (first $CTRL_HEAD) -----"
+      head -n $CTRL_HEAD "$LATEST_EXECLOG" 2>&1
+      echo "----- ExecSql TAIL (last $CTRL_TAIL) -----"
+      tail -n $CTRL_TAIL "$LATEST_EXECLOG" 2>&1
+      echo "----- ExecSql MATCHES (grep -nE) -----"
+      LC_ALL=C grep -nE "$CTRL_GREPPAT" "$LATEST_EXECLOG" || echo "NO MATCHES"
+      echo "----- End ExecSql Debug -----"
+    } >>"$CTRL_LOG" 2>>"$CTRL_ERR"
 
-  # Show first/last lines and *all* matching lines with line numbers
-  {
-    echo "----- ExecSql HEAD (first 80 lines) -----"
-    head -n 80 "$LATEST_EXECLOG" 2>&1
-    echo "----- ExecSql TAIL (last 80 lines) -----"
-    tail -n 80 "$LATEST_EXECLOG" 2>&1
-    echo "----- ExecSql MATCHES (grep -nE) -----"
-    LC_ALL=C grep -nE "$CE_PAT" "$LATEST_EXECLOG" || echo "NO MATCHES"
-    echo "----- End ExecSql Debug -----"
-  } >>"$CTRL_LOG" 2>>"$CTRL_ERR"
+    # If matches exist but only contain whitelisted phrases, treat as OK
+    if LC_ALL=C grep -nE "$CTRL_GREPPAT" "$LATEST_EXECLOG" >/tmp/_ctrl_matches.$$ 2>>"$CTRL_ERR"; then
+      if [ -n "$CTRL_WHITELIST" ] && LC_ALL=C egrep -vi "$CTRL_WHITELIST" /tmp/_ctrl_matches.$$ >/tmp/_ctrl_real.$$ 2>>"$CTRL_ERR"; then
+        if [ -s /tmp/_ctrl_real.$$ ]; then
+          fail "CHECK_ERROR: Non-whitelisted matches found in $LATEST_EXECLOG (see log)"
+          _CE_RC=98
+        else
+          logf "CHECK_ERROR: Only whitelisted matches; treating as OK."
+          _CE_RC=0
+        fi
+      else
+        fail "CHECK_ERROR: Matches found in $LATEST_EXECLOG (no whitelist applied)"
+        _CE_RC=98
+      fi
+      rm -f /tmp/_ctrl_matches.$$ /tmp/_ctrl_real.$$
+    else
+      logf "CHECK_ERROR: No matches found by pattern."
+      _CE_RC=0
+    fi
+  else
+    logf "CHECK_ERROR: No ExecSql.*.log found to scan."
+    _CE_RC=0
+  fi
+  set -x
 else
-  logf "CHECK_ERROR: No ExecSql.*.log found to scan."
+  logf "CHECK_ERROR: Disabled by CTRL_ENABLE_CHECKER=0"
+  _CE_RC=0
 fi
 
 # --- Audit end ---
+set +x
 safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
 safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End $SCRIPT_NAME for $BOX_NAME"
+
+# Return non-zero if checker found non-whitelisted errors;
+# comment out next line if you want controller to return 0 regardless.
+[ ${_CE_RC:-0} -eq 0 ] || exit $_CE_RC
 
 exit 0
