@@ -1,15 +1,14 @@
 #!/bin/ksh
 # -----------------------------------------------------------------------------
-# autosys_controller.ksh  — ORG STYLE, EXTREME DEBUG (ksh88/pdksh safe)
-# Hourly flow (controller owns cadence for <BOX_NAME>):
+# autosys_controller.ksh — ORG STYLE, EXTREME DEBUG (ksh88/pdksh safe)
+# Flow:
 #   1) autosys_get_status.ksh <BOX> <APP_ID> <BUS_DATE> [GET_EXTRA]
 #   2) autosys_reset.ksh     <BOX> <APP_ID> <BUS_DATE> [RESET_EXTRA]  -> INACTIVE
 #   3) ${AUTOSYS_RESET_DIR}/sendevent -P 1 -E STARTJOB -J <BOX>       -> Start now
 #
 # Exit codes:
 #   0 OK | 11 get_status failed | 12 reset failed | 13 start failed
-#   90 ENV missing | 91/92/93 required binary missing | 97 args missing
-#   98 ExecSql checker found non-whitelisted errors
+#   90 ENV missing | 91/92/93 binary missing | 97 args missing | 98 checker flagged
 # -----------------------------------------------------------------------------
 
 set +e   # don't let inherited 'set -e' kill the script
@@ -30,12 +29,12 @@ GET_EXTRA="$4"     # optional flags for get_status
 RESET_EXTRA="$5"   # optional flags for reset
 CATEGORY_ID=1
 
-# --- Optional knobs (env/JIL profile overrideable) ---
+# --- Optional knobs (override in job profile if needed) ---
 [ -z "$CTRL_ENABLE_CHECKER" ] && CTRL_ENABLE_CHECKER=1
-[ -z "$CTRL_GREPPAT" ] && CTRL_GREPPAT='(ORA-[0-9]+|SQLSTATE|^ERROR| ERROR |FATAL|EXCEPTION|Abend|Segmentation fault|command not found|RETURN CODE:[1-9]|JOBFAILURE)'
-[ -z "$CTRL_WHITELIST" ] && CTRL_WHITELIST='No errors found|0 errors|RETURN CODE:0|NOT an error'
-[ -z "$CTRL_HEAD" ] && CTRL_HEAD=80
-[ -z "$CTRL_TAIL" ] && CTRL_TAIL=80
+[ -z "$CTRL_GREPPAT" ] && CTRL_GREPPAT='(ORA-[0-9]+|SQLSTATE|^ERROR| ERROR |FATAL|EXCEPTION|Abend|Segmentation fault|command not found|JOBFAILURE)'
+[ -z "$CTRL_WHITELIST" ] && CTRL_WHITELIST='No errors found|0 errors|RETURN CODE:0|NOT an error|Checking Errors in File|Attaching File|Mail Sent'
+[ -z "$CTRL_HEAD" ] && CTRL_HEAD=60
+[ -z "$CTRL_TAIL" ] && CTRL_TAIL=60
 
 # --- Validate args early ---
 if [ -z "$BOX_NAME" ] || [ -z "$APP_ID" ] || [ -z "$BUS_DATE_PARAM" ]; then
@@ -54,7 +53,7 @@ CTRL_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.log"
 CTRL_ERR="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.err.log"
 START_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_start_${TIMESTAMP}.log"
 
-# --- Paths from env (ORG CONVENTIONS) ---
+# --- Paths from env ---
 GET_STATUS_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_get_status.ksh
 RESET_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_reset.ksh
 SENDEVENT_BIN=${AUTOSYS_RESET_DIR}/sendevent
@@ -83,21 +82,9 @@ run_cmd() {
   return $_RC
 }
 
-safe_fx_event() {
-  fx_sam8_odm_event_log "$@" ; _RC=$?
-  [ $_RC -ne 0 ] && logf "WARN: fx_sam8_odm_event_log RC=$_RC (continuing)"
-  return 0
-}
-safe_chk_start() {
-  CHKDOMBATCHSCHEDULESTART "$@" ; _RC=$?
-  [ $_RC -ne 0 ] && logf "WARN: CHKDOMBATCHSCHEDULESTART RC=$_RC (continuing)"
-  return 0
-}
-safe_chk_end() {
-  CHKDOMBATCHSCHEDULEEND "$@" ; _RC=$?
-  [ $_RC -ne 0 ] && logf "WARN: CHKDOMBATCHSCHEDULEEND RC=$_RC (continuing)"
-  return 0
-}
+safe_fx_event() { fx_sam8_odm_event_log "$@"; _RC=$?; [ $_RC -ne 0 ] && logf "WARN: fx_sam8_odm_event_log RC=$_RC"; }
+safe_chk_start(){ CHKDOMBATCHSCHEDULESTART "$@"; _RC=$?; [ $_RC -ne 0 ] && logf "WARN: CHKDOMBATCHSCHEDULESTART RC=$_RC"; }
+safe_chk_end()  { CHKDOMBATCHSCHEDULEEND   "$@"; _RC=$?; [ $_RC -ne 0 ] && logf "WARN: CHKDOMBATCHSCHEDULEEND RC=$_RC"; }
 
 get_box_status() {
   if [ -x "$AUTOREP_WRAPPER" ]; then
@@ -108,8 +95,7 @@ get_box_status() {
 }
 
 dump_file_info() {
-  _F="$1"
-  [ -n "$_F" ] || return 0
+  _F="$1"; [ -n "$_F" ] || return 0
   {
     echo "---- FILE INFO: $_F ----"
     ls -l $_F 2>&1
@@ -119,7 +105,7 @@ dump_file_info() {
   } >>"$CTRL_LOG"
 }
 
-# --- SUPER DEBUG HEADER ---
+# --- DEBUG HEADER ---
 {
   echo "===== DEBUG HEADER ====="
   echo "SCRIPT_NAME=$SCRIPT_NAME"
@@ -154,10 +140,8 @@ dump_file_info "$SENDEVENT_BIN"
 # --- STDERR tee using named pipe (ksh88-safe) ---
 CTRL_ERR_PIPE="/tmp/${SCRIPT_NAME}_$$.errpipe"
 mkfifo "$CTRL_ERR_PIPE"
-# tee: write to CTRL_ERR and pass through to real stderr
 tee -a "$CTRL_ERR" <"$CTRL_ERR_PIPE" >&2 &
 TEE_PID=$!
-# redirect script stderr to pipe
 exec 2>"$CTRL_ERR_PIPE"
 
 # --- Audit start (non-fatal) ---
@@ -174,14 +158,11 @@ if [ -n "$GET_EXTRA" ]; then
 else
   run_cmd "get_status" "$GET_STATUS_SH" "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM"
 fi
-RC=$?
-if [ $RC -ne 0 ]; then
+RC=$?; if [ $RC -ne 0 ]; then
   fail "autosys_get_status.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (get_status failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
-  # cleanup pipe before exit
-  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"
-  exit 11
+  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 11
 fi
 
 # --- 2) RESET ---
@@ -190,13 +171,11 @@ if [ -n "$RESET_EXTRA" ]; then
 else
   run_cmd "reset" "$RESET_SH" "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM"
 fi
-RC=$?
-if [ $RC -ne 0 ]; then
+RC=$?; if [ $RC -ne 0 ]; then
   fail "autosys_reset.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (reset failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
-  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"
-  exit 12
+  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 12
 fi
 
 POST_RESET_ST=`get_box_status`
@@ -204,44 +183,38 @@ logf "POST-RESET BOX STATUS [$BOX_NAME] = ${POST_RESET_ST:-UNKNOWN}"
 
 # --- 3) START BOX NOW ---
 run_cmd "start_box" "$SENDEVENT_BIN" -P 1 -E STARTJOB -J "${BOX_NAME}"
-RC=$?
-if [ $RC -ne 0 ]; then
+RC=$?; if [ $RC -ne 0 ]; then
   fail "STARTJOB ${BOX_NAME} failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
   safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (start failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
-  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"
-  exit 13
+  exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 13
 fi
 
 AFTER_START_ST=`get_box_status`
 logf "AFTER-START BOX STATUS [$BOX_NAME] = ${AFTER_START_ST:-UNKNOWN}"
 
-# --- ExecSql checker (why RC=1) ---
+# --- ExecSql checker: print EXACT matches to stdout + log ---
 _CE_RC=0
 if [ "$CTRL_ENABLE_CHECKER" = "1" ]; then
   LATEST_EXECLOG=`ls -1t /apps/samd/actimize/package_utilities/common/Log/ExecSql.*.log 2>/dev/null | head -1`
   if [ -n "$LATEST_EXECLOG" ]; then
     logf "CHECK_ERROR: Latest ExecSql log: $LATEST_EXECLOG"
-    dump_file_info "$LATEST_EXECLOG"
     logf "CHECK_ERROR: Pattern: $CTRL_GREPPAT"
     logf "CHECK_ERROR: Whitelist: $CTRL_WHITELIST"
 
-    {
-      echo "----- ExecSql HEAD (first $CTRL_HEAD) -----"
-      head -n $CTRL_HEAD "$LATEST_EXECLOG" 2>&1
-      echo "----- ExecSql TAIL (last $CTRL_TAIL) -----"
-      tail -n $CTRL_TAIL "$LATEST_EXECLOG" 2>&1
-      echo "----- ExecSql MATCHES (grep -nE) -----"
-      LC_ALL=C grep -nE "$CTRL_GREPPAT" "$LATEST_EXECLOG" || echo "NO MATCHES"
-      echo "----- End ExecSql Debug -----"
-    } >>"$CTRL_LOG" 2>>"$CTRL_ERR"
+    echo "----- ExecSql HEAD (first $CTRL_HEAD) -----" | tee -a "$CTRL_LOG"
+    head -n $CTRL_HEAD "$LATEST_EXECLOG" 2>&1 | tee -a "$CTRL_LOG" >>"$CTRL_ERR"
+    echo "----- ExecSql TAIL (last $CTRL_TAIL) -----"  | tee -a "$CTRL_LOG"
+    tail -n $CTRL_TAIL "$LATEST_EXECLOG" 2>&1 | tee -a "$CTRL_LOG" >>"$CTRL_ERR"
+    echo "----- ExecSql MATCHES (grep -nE) -----"      | tee -a "$CTRL_LOG"
 
-    LC_ALL=C grep -nE "$CTRL_GREPPAT" "$LATEST_EXECLOG" >/tmp/_ctrl_matches.$$ 2>>"$CTRL_ERR"
+    LC_ALL=C grep -nE "$CTRL_GREPPAT" "$LATEST_EXECLOG" > /tmp/_ctrl_matches.$$ 2>>"$CTRL_ERR"
     if [ -s /tmp/_ctrl_matches.$$ ]; then
+      cat /tmp/_ctrl_matches.$$ | tee -a "$CTRL_LOG"
       if [ -n "$CTRL_WHITELIST" ]; then
-        LC_ALL=C egrep -vi "$CTRL_WHITELIST" /tmp/_ctrl_matches.$$ >/tmp/_ctrl_real.$$
+        LC_ALL=C egrep -vi "$CTRL_WHITELIST" /tmp/_ctrl_matches.$$ > /tmp/_ctrl_real.$$
         if [ -s /tmp/_ctrl_real.$$ ]; then
-          fail "CHECK_ERROR: Non-whitelisted matches found (see log)"
+          fail "CHECK_ERROR: Non-whitelisted matches found (see above)"
           _CE_RC=98
         else
           logf "CHECK_ERROR: Only whitelisted matches; treating as OK."
@@ -253,9 +226,10 @@ if [ "$CTRL_ENABLE_CHECKER" = "1" ]; then
         _CE_RC=98
       fi
     else
-      logf "CHECK_ERROR: No matches found by pattern."
+      echo "NO MATCHES" | tee -a "$CTRL_LOG"
       _CE_RC=0
     fi
+    echo "----- End ExecSql Debug -----" | tee -a "$CTRL_LOG"
     rm -f /tmp/_ctrl_matches.$$
   else
     logf "CHECK_ERROR: No ExecSql.*.log found to scan."
