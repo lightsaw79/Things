@@ -1,0 +1,12 @@
+insert_job: tm1_dummy_test_hourly_controller job_type: CMD
+box_name: tm1_dummy_test_reset_box
+command: $AUTOSYS_COMMON_BIN_DIR/autosys_hourly_controller.ksh tm1_dummy_test_box tm1_dummy_test_box_get_status tm1_dummy_test_reset 15320 $SAM8_BUSINESS_DATE
+machine: isamudesvaispir.barcapint.com
+owner: syssamad
+date_conditions: 1
+days_of_week: th
+start_times: "00:00,01:00,02:00,03:00,04:00,05:00,06:00,07:00,08:00,09:00,10:00,11:00,12:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00,21:00,22:00,23:00"
+std_out_file: "$ERRSPATH/${AUTO_JOB_NAME}_$BCUS_TS.log"
+std_err_file: "$ERRSPATH/${AUTO_JOB_NAME}_$BCUS_TS.err"
+alarm_if_fail: 1
+profile: "/apps/samd/actimize/package_utilities/common/bin/autosys.sh"
