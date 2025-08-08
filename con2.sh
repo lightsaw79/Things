@@ -1,11 +1,12 @@
+#!/bin/ksh
 
 # --- Environment ---
-ENV_FILE=/apps/samd/actimize/package_utilities/common/config/sam8.env
+export ENV_FILE=/apps/samd/actimize/package_utilities/common/config/sam8.env
 if [ ! -f "$ENV_FILE" ]; then
-  print "Environment file [$ENV_FILE] not found. Exiting ..."
+  echo "Environment file [$ENV_FILE] not found. Exiting ..."
   exit 1
 fi
-. "$ENV_FILE"
+. $ENV_FILE
 
 # --- Args from JIL (NO hard-coding) ---
 BOX_NAME=$1
@@ -30,8 +31,8 @@ SENDEVENT_BIN=${AUTOSYS_RESET_DIR}/sendevent
 CTRL_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.log"
 CTRL_ERR="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.err.log"
 
-# --- Helpers ---
-log()     { print -- "`date '+%Y-%m-%d %H:%M:%S'` | $SCRIPT_NAME | $*"; }
+# --- Helpers (echo-only) ---
+log()     { echo "`date '+%Y-%m-%d %H:%M:%S'` | $SCRIPT_NAME | $*"; }
 logf()    { log "$*"       | tee -a "$CTRL_LOG" ; }
 logerrf() { log "ERROR: $*" | tee -a "$CTRL_ERR" 1>&2; }
 
@@ -84,8 +85,13 @@ send_force_start() {
 
 # --- Start audit + SLA guard (matches your other scripts) ---
 fx_sam8_odm_event_log $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 93 1 "Execution Started $SCRIPT_NAME for $BOX_NAME"
-trap "LogError $APP_ID $? '$SCRIPT_NAME trapped signal'" ERR 2 3 15
+# Keep trap commented while stabilizing; re-enable when steady
+# trap "LogError $APP_ID $? '$SCRIPT_NAME trapped signal'" ERR 2 3 15
 CHKDOMBATCHSCHEDULESTART "$APP_ID" "$CATEGORY_ID" "$BUS_DATE_PARAM" "$CALNDR_CD" "$RE_RUN_OVERRIDE" "$RE_RUN_MSG" "$GLBL_OVERRIDE" "$GLBL_RE_RUN_MSG"
+
+# --- DEBUG banner ---
+Log "$SCRIPT_NAME | DEBUG: BOX=$BOX_NAME GET=$GET_STATUS_JOB RESET=$RESET_JOB APP_ID=$APP_ID SENDEVENT_BIN=$SENDEVENT_BIN AUTOREP_WRAPPER=$AUTOREP_WRAPPER"
+logf "DEBUG: args=[$BOX_NAME] [$GET_STATUS_JOB] [$RESET_JOB] APP_ID=[$APP_ID] BD=[$BUS_DATE_PARAM]"
 
 # --- Controller logic ---
 CUR_ST=`get_status "$BOX_NAME"`
