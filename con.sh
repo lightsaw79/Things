@@ -105,6 +105,11 @@ dump_file_info() {
   } >>"$CTRL_LOG"
 }
 
+# --- Quote/escape helper for ODM message strings ---
+_esc() { echo "$1" | sed "s/'/''/g"; }
+MSG_START="'Execution Started $(_esc "$SCRIPT_NAME") for $(_esc "$BOX_NAME")'"
+MSG_END="'Execution End $(_esc "$SCRIPT_NAME") for $(_esc "$BOX_NAME")'"
+
 # --- DEBUG HEADER ---
 {
   echo "===== DEBUG HEADER ====="
@@ -145,7 +150,8 @@ TEE_PID=$!
 exec 2>"$CTRL_ERR_PIPE"
 
 # --- Audit start (non-fatal) ---
-safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 93 1 "Execution Started $SCRIPT_NAME for $BOX_NAME"
+safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 93 1 $MSG_START
+
 safe_chk_start "$APP_ID" "$CATEGORY_ID" "$BUS_DATE_PARAM" "$CALNDR_CD" "$RE_RUN_OVERRIDE" "$RE_RUN_MSG" "$GLBL_OVERRIDE" "$GLBL_RE_RUN_MSG"
 
 # --- Status BEFORE ---
@@ -161,7 +167,7 @@ fi
 RC=$?; if [ $RC -ne 0 ]; then
   fail "autosys_get_status.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
-  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (get_status failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
+  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 $MSG_END
   exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 11
 fi
 
@@ -174,7 +180,7 @@ fi
 RC=$?; if [ $RC -ne 0 ]; then
   fail "autosys_reset.ksh failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
-  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (reset failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
+  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 $MSG_END
   exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 12
 fi
 
@@ -186,7 +192,7 @@ run_cmd "start_box" "$SENDEVENT_BIN" -P 1 -E STARTJOB -J "${BOX_NAME}"
 RC=$?; if [ $RC -ne 0 ]; then
   fail "STARTJOB ${BOX_NAME} failed (RC=$RC)"
   safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
-  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End (start failed RC=$RC) $SCRIPT_NAME for $BOX_NAME"
+  safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 $MSG_END
   exec 2>&1; kill $TEE_PID 2>/dev/null; rm -f "$CTRL_ERR_PIPE"; exit 13
 fi
 
@@ -196,7 +202,7 @@ logf "AFTER-START BOX STATUS [$BOX_NAME] = ${AFTER_START_ST:-UNKNOWN}"
 # --- ExecSql checker: print EXACT matches to stdout + log ---
 _CE_RC=0
 if [ "$CTRL_ENABLE_CHECKER" = "1" ]; then
-  LATEST_EXECLOG=`ls -1t /apps/samd/actimize/package_utilities/common/Log/ExecSql.*.log 2>/dev/null | head -1`
+  LATEST_EXECLOG=`ls -1t /apps/samd/actimize/package_utilities/common/Log/ExecSql.*.log 2>/dev/null | head -1"
   if [ -n "$LATEST_EXECLOG" ]; then
     logf "CHECK_ERROR: Latest ExecSql log: $LATEST_EXECLOG"
     logf "CHECK_ERROR: Pattern: $CTRL_GREPPAT"
@@ -242,7 +248,7 @@ fi
 
 # --- Audit end + cleanup ---
 safe_chk_end "$APP_ID" "$BUS_DATE_PARAM"
-safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End $SCRIPT_NAME for $BOX_NAME"
+safe_fx_event $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 $MSG_END
 
 # close stderr tee cleanly
 exec 2>&1
