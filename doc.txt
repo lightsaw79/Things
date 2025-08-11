@@ -1,0 +1,104 @@
+Comparison Utility Quick User Guide
+We verify that two datasets are identical by using a concat and compare method:
+For each row, the selected columns are converted to text (so 3.0 becomes 3, blanks become ""),
+then joined into one Concatenated key.
+We do this on both sides (Database vs Datasheet, or Database vs Database) and compare the keys.
+Any row that appears on only one side is a mismatch.
+The report lists the full row for every mismatch (not just the key) and also shows the exact
+concatenation strings used next to those rows.
+Rows in the datasheet with a Version ending in -deleted (e.g., 17-deleted) are ignored before
+comparing.
+Special rules handled automatically (if configured):
+Thresholds: skip the first two DB columns during concatenation.
+ABC sheet: ignore sheet columns A C; start from D (Concatenated) onward.
+Any other sheets can have custom column rules via a per-sheet map.
+Generated 2025-08-11 13:36 Page 1
+Prerequisites
+Prerequisites:
+Python 3.x
+Packages: pandas, openpyxl, oracledb
+Network/VPN access to Oracle environments (SIT/UAT/PROD), and credentials.
+Install packages if needed:
+pip install pandas openpyxl oracledb
+Generated 2025-08-11 13:36 Page 2
+How to Run
+How to run (high-level):
+Open the Jupyter notebook (or run the Python script).
+Choose a comparison mode when prompted:
+1 = Database vs Datasheet (uses hard-coded SQL per sheet)
+2 = Database vs Database (runs the same hard-coded SQL per sheet on both DBs)
+Follow the prompts for environment(s), sheet selection, and export location for the report.
+The tool prints the full file path where the Excel report was saved.
+Generated 2025-08-11 13:36 Page 3
+Mode 1 Database vs Datasheet
+Mode 1 Database vs Datasheet (hard-coded SQL):
+Select database environment (SIT_STG, SIT_CDS, UAT_STG, UAT_CDS, PROD) and enter credentials.
+Enter the full path to your master Excel datasheet (e.g., C:\Data\Master.xlsx).
+Choose which sheets to compare: You ll see a numbered list of sheet names.
+Enter 0 to compare all listed sheets (any ignored names are removed), or enter a comma-separated
+list like 1,3,5.
+SQL is taken from the built-in SQL_QUERIES dictionary (no pasting required).
+Enter an output folder and filename (the folder is created if missing).
+The tool converts to text, drops Version rows ending -deleted, applies per-sheet column rules,
+compares Concatenated keys, and writes the Excel report.
+Generated 2025-08-11 13:36 Page 4
+Mode 2 Database vs Database
+Mode 2 Database vs Database (hard-coded SQL):
+Select the first environment (e.g., SIT_STG), enter credentials.
+Select the second environment (e.g., UAT_STG), enter credentials.
+Pick sheets to compare (same menu as Mode 1: 0 for all, or 1,3,5).
+Enter the output folder and base filename; the Excel file will be saved there.
+For each selected sheet, the same hard-coded SQL is run on both environments, values are text-
+normalized and concatenated, differences are found, and the report is produced.
+Generated 2025-08-11 13:36 Page 5
+Sheet Selection
+Sheet selection (what you ll see):
+Which sheets do you want to compare?
+0: All sheets
+1: Scales
+2: Thresholds
+3: ABC
+...
+Type 0 to process all (except any configured ignores), or type specific numbers, e.g. 1,3.
+(Admins can configure an ignore list so certain tabs never appear in this menu.)
+Generated 2025-08-11 13:36 Page 6
+Report Output
+Output What s in the Excel report:
+<Sheet>_MismatchDetails Full rows for each mismatch with columns:
+MismatchType (e.g., 'Sheet only', 'DB only' or '<ENV> only' in DB-vs-DB)
+All columns used in concatenation
+DB_Concatenation and Sheet_Concatenation (or environment-specific concatenations in DB-vs-DB
+<Sheet>_SheetDupes Duplicate concatenation keys in the sheet (if any).
+<Sheet>_DBDupes Duplicate concatenation keys in the DB result (if any).
+At the end of the run, the tool prints the full path where it saved the .xlsx.
+Generated 2025-08-11 13:36 Page 7
+Important Rules
+Important rules handled by the tool:
+Text normalization: 3.0 '3'; 2.5 stays '2.5'; NaN/None ''.
+Deleted versions: sheet rows with Version ending '-deleted' are excluded.
+Thresholds sheet: skip the first two DB columns for concatenation.
+ABC sheet: drop sheet columns A C; start from 'Concatenated' (column D) onward.
+Per-sheet control: other sheets can specify exact columns via a configuration map.
+Generated 2025-08-11 13:36 Page 8
+File Location & Naming
+File location / naming:
+You choose the export folder and filename when prompted.
+The tool creates the folder if it doesn t exist.
+The console prints the exact full path to the saved file when finished.
+Generated 2025-08-11 13:36 Page 9
+Check VPN, host/port/service, credentials; try a simple SELECT 1 FROM
+Troubleshooting
+Troubleshooting:
+Oracle connection fails dual.
+File not found Confirm the export folder exists (or let the tool create it).
+NBSP / weird whitespace errors Retype the line (stray non breaking space).
+Missing 'Concatenated' in sheet (case sensitive).
+Ensure the sheet contains a 'Concatenated' column
+Unexpected 3.0 vs 3 mismatches latest script.
+Already handled by text normalization; ensure you re on the
+Generated 2025-08-11 13:36 Page 10
+Contacts
+Who to contact:
+If something looks off or you need a new sheet added, contact the maintainer of SQL_QUERIES,
+concat_map, and the ignored-sheets list.
+Generated 2025-08-11 13:36 Page 11
