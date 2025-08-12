@@ -1,40 +1,45 @@
 # -*- coding: utf-8 -*-
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.shapes import MSO_SHAPE, MSO_CONNECTOR
 from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE_DASH_STYLE
 
 import pandas as pd
-from datetime import datetime, date
+from datetime import date, datetime
 from calendar import monthrange
 
-# ---------- 1) CONFIG ----------
-EXCEL_PATH = r"C:\path\to\your\Input.xlsx"
-OUT_PPTX   = r"C:\path\to\output\Roadmap.pptx"
+# ---------------- CONFIG ----------------
+INPUT_XLSX = r"C:\path\to\Roadmap_Input.xlsx"   # <-- change me
+OUT_PPTX   = r"C:\path\to\Roadmap.pptx"         # <-- change me
 
-SLIDE_W, SLIDE_H = Inches(20), Inches(9)   # keep your perfect layout
-MAX_ROWS = 30                               # 30 rows per slide
+SLIDE_W_IN, SLIDE_H_IN = 20, 9  # slide size in inches
 
-# Geometry constants (kept same “look” you liked)
-SIDEBAR_W   = Inches(4)                     # left table width
-TYPE_COL_W  = Inches(1.5)                   # Type width (inside the table)
-WORK_COL_W  = SIDEBAR_W - TYPE_COL_W
-HEADER_H    = Inches(1.0)                   # top months header
-LEGEND_H    = Inches(0.6)
-LEGEND_TOP  = Inches(0.2)
-TOP_MARGIN  = LEGEND_TOP + LEGEND_H + Inches(0.2)
-BOTTOM_MARGIN = Inches(1.0)                 # space near bottom
+LEFT_PAD   = Inches(0.5)
+RIGHT_PAD  = Inches(0.5)
+TOP_PAD    = Inches(1.4)   # space for legend
+BOTTOM_PAD = Inches(0.5)
 
-LIGHT_COL   = RGBColor(224,242,255)
-DARK_COL    = RGBColor(190,220,240)
-BLUE_HDR    = RGBColor(91,155,213)
-WHITE       = RGBColor(255,255,255)
-NAVY        = RGBColor(0,0,128)
-GREEN_DOT   = RGBColor(0,176,80)
+TYPE_COL_W = Inches(1.5)
+WORK_COL_W = Inches(2.5)        # tweak if you want more/less sidebar width
+HEADER_H   = Inches(1.0)
+ROW_H_MIN  = Inches(0.6)        # minimum comfy row height (will shrink if needed)
 
-# Status colors
+COL_COUNT  = 12                 # months
+ROWS_PER_PAGE = 30              # groups per slide
+
+# Colors
+BLUE_HDR   = RGBColor( 91,155,213)
+ALT_ROW_1  = RGBColor(224,242,255)  # light
+ALT_ROW_2  = RGBColor(190,220,240)  # medium
+GRID_WHITE = RGBColor(255,255,255)
+NAVY_LINE  = RGBColor(  0,  0,128)
+TODAY_GRN  = RGBColor(  0,176, 80)
+BLACK      = RGBColor(  0,  0,  0)
+WHITE      = RGBColor(255,255,255)
+
+# Status → colors
 STATUS_COLORS = {
     "On Track": RGBColor(0,176,80),
     "At Risk":  RGBColor(255,192,0),
@@ -43,338 +48,315 @@ STATUS_COLORS = {
     "TBC":      RGBColor(191,191,191),
 }
 
-# Marker sizes
+# Milestone marker sizes and label offsets
 CIRCLE_SIZE = Inches(0.30)
 STAR_SIZE   = Inches(0.40)
+LBL_DX      = Inches(0.40)      # label x offset to the right of marker
+LBL_DY      = Inches(0.10)      # label y offset upward
 
-# ---------- 2) TABLE-CELL BORDER HELPER (fixes 'border_left' error) ----------
-from pptx.oxml.xmlchemy import OxmlElement
-from pptx.oxml.ns import qn
+# ---------------- HELPERS ----------------
+def normalize_text(s):
+    if pd.isna(s): return ""
+    return " ".join(str(s).split()).casefold()
 
-def set_cell_border(cell, *, left=None, right=None, top=None, bottom=None):
-    """
-    Apply borders to a python-pptx table cell via oxml.
-    Each side spec is dict: {'sz': 635, 'color': 'FFFFFF', 'dash': 'solid'}
-    sz in EMUs (12700 ≈ 1pt). 635 ≈ 0.05pt (hairline).
-    """
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
+def type_bucket(s):
+    s = normalize_text(s)
+    if not s: return ""
+    out = []
+    for ch in s:
+        if ch.isalnum() or ch in "-_/":
+            out.append(ch)
+        elif out:
+            break
+    return "".join(out)
 
-    def _one_side(tag, spec):
-        # remove existing side lines
-        for el in tcPr.findall(qn(f"a:{tag}")):
-            tcPr.remove(el)
-        if not spec:
-            return
-        ln = OxmlElement(f"a:{tag}")                # a:lnL / a:lnR / a:lnT / a:lnB
-        ln.set("w", str(spec.get("sz", 635)))
+def month_name(y, m):
+    return date(y, m, 1).strftime("%b %y")
 
-        solid = OxmlElement("a:solidFill")
-        rgb = OxmlElement("a:srgbClr")
-        rgb.set("val", spec.get("color", "FFFFFF"))
-        solid.append(rgb)
-        ln.append(solid)
+def day_fraction(d: date) -> float:
+    dim = monthrange(d.year, d.month)[1]
+    return 0.5 if dim <= 1 else (d.day - 1) / (dim - 1)
 
-        dash = OxmlElement("a:prstDash")
-        dash.set("val", spec.get("dash", "solid"))
-        ln.append(dash)
+def add_textbox(slide, left, top, width, height, text, size=12,
+                color=BLACK, bold=False, align=PP_ALIGN.LEFT,
+                vanchor=MSO_ANCHOR.MIDDLE):
+    tb = slide.shapes.add_textbox(left, top, width, height)
+    tf = tb.text_frame; tf.clear()
+    p = tf.paragraphs[0]
+    p.text = text
+    p.font.size = Pt(size)
+    p.font.bold = bold
+    p.font.color.rgb = color
+    p.alignment = align
+    tf.vertical_anchor = vanchor
+    return tb
 
-        ln.append(OxmlElement("a:round"))
-        tcPr.append(ln)
-
-    _one_side("lnL", left)
-    _one_side("lnR", right)
-    _one_side("lnT", top)
-    _one_side("lnB", bottom)
-
-BORDER_SPEC = {"sz": 12700, "color": "FFFFFF", "dash": "solid"}  # 1pt white grid borders
-
-
-# ---------- 3) DATA ----------
-df = pd.read_excel(EXCEL_PATH)
-df["Milestone Date"] = pd.to_datetime(df["Milestone Date"])
-df["Year"] = df["Milestone Date"].dt.year
-
-# Cleaning for sort (stable/grouped alphabetical: Type, then Workstream)
-def _norm(s):
-    return (
-        s.astype(str)
-         .str.replace(r"\s+", " ", regex=True)
-         .str.strip()
-         .str.casefold()
-    )
-
-df["_type_key"] = _norm(df["Type"])
-df["_work_key"] = _norm(df["Workstream"])
-
-# Sort: Type (bucket+key), then Workstream, then date (stable keeps input order otherwise)
-df = df.sort_values(by=["_type_key", "_work_key", "Milestone Date"], kind="stable")
-
-# Group label used in the sidebar table and to align rows
-df["Group"] = df["Type"].astype(str) + "\n(" + df["Workstream"].astype(str) + ")"
-
-
-# ---------- 4) BUILD ONE SLIDE ----------
-def build_slide(prs, subset_df, year, page_no, total_pages):
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-
-    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
-
-    # geometry
-    chart_w = prs.slide_width - SIDEBAR_W - Inches(0.5)  # keep right margin ~0.5"
-    chart_h = prs.slide_height - TOP_MARGIN - BOTTOM_MARGIN
-    col_count = 12
-    col_w = chart_w / col_count
-
-    groups = list(dict.fromkeys(subset_df["Group"]))
-    row_count = len(groups)
-    row_h = chart_h / max(row_count, 1)
-
-    LEFT_PAD  = Inches(0.25)
-    left_origin = LEFT_PAD
-    top_origin  = TOP_MARGIN
-
-    # ---------- Legend (spread across top) ----------
-    legend_items = [
-        ("Major Milestone", MSO_SHAPE.STAR_5_POINT, RGBColor(0,176,80)),
-        ("On Track",        MSO_SHAPE.OVAL,        STATUS_COLORS["On Track"]),
-        ("At Risk",         MSO_SHAPE.OVAL,        STATUS_COLORS["At Risk"]),
-        ("Off Track",       MSO_SHAPE.OVAL,        STATUS_COLORS["Off Track"]),
-        ("Complete",        MSO_SHAPE.OVAL,        STATUS_COLORS["Complete"]),
-        ("TBC",             MSO_SHAPE.OVAL,        STATUS_COLORS["TBC"]),
+def build_legend(slide):
+    items = [
+        ("Major Milestone", MSO_SHAPE.STAR_5_POINT, STATUS_COLORS["On Track"]),
+        ("On Track",  MSO_SHAPE.OVAL, STATUS_COLORS["On Track"]),
+        ("At Risk",   MSO_SHAPE.OVAL, STATUS_COLORS["At Risk"]),
+        ("Off Track", MSO_SHAPE.OVAL, STATUS_COLORS["Off Track"]),
+        ("Complete",  MSO_SHAPE.OVAL, STATUS_COLORS["Complete"]),
+        ("TBC",       MSO_SHAPE.OVAL, STATUS_COLORS["TBC"]),
     ]
-    legend_left = left_origin - LEFT_PAD
-    legend_width = prs.slide_width - legend_left - Inches(0.5)
-    slot_w = legend_width / len(legend_items)
-    legend_y = Inches(0.2)
+    band_left = LEFT_PAD
+    band_w = Inches(SLIDE_W_IN) - LEFT_PAD - RIGHT_PAD
+    slot = band_w / len(items)
+    y = Inches(0.3)
 
-    for i, (label, shp_type, color) in enumerate(legend_items):
-        x = legend_left + i*slot_w + (slot_w - Inches(0.3))/2
-        mark = slide.shapes.add_shape(shp_type, x, legend_y, Inches(0.3), Inches(0.3))
-        mark.fill.solid(); mark.fill.fore_color.rgb = color
-        mark.line.fill.background()
+    for i, (lbl, shp, col) in enumerate(items):
+        x = band_left + slot*i + Inches(0.3)
+        size = STAR_SIZE if "Major" in lbl else CIRCLE_SIZE
+        s = slide.shapes.add_shape(shp, x, y, size, size)
+        s.fill.solid(); s.fill.fore_color.rgb = col
+        s.line.fill.solid(); s.line.fill.fore_color.rgb = BLACK; s.line.width = Pt(0.75)
+        add_textbox(slide, x + size + Inches(0.15), y - Inches(0.02),
+                    slot - (size + Inches(0.2)), size,
+                    lbl, size=14, align=PP_ALIGN.LEFT)
 
-        tb = slide.shapes.add_textbox(x + Inches(0.35), legend_y, Inches(1.0), Inches(0.3))
-        p = tb.text_frame.paragraphs[0]
-        p.text = label
-        p.font.size = Pt(15)
-        p.alignment = PP_ALIGN.LEFT
-
-    # ---------- Header month row (blue blocks) ----------
-    header = slide.shapes.add_shape(
-        MSO_SHAPE.RECTANGLE,
-        left_origin + SIDEBAR_W, top_origin,
-        chart_w, HEADER_H
-    )
-    header.fill.solid(); header.fill.fore_color.rgb = BLUE_HDR
-    header.line.fill.solid(); header.line.fill.fore_color.rgb = WHITE; header.line.width = Pt(0.95)
-
-    for m, d in enumerate(pd.date_range(f"{year}-01-01", f"{year}-12-01", freq="MS")):
-        # month cell
-        cell = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            left_origin + SIDEBAR_W + m*col_w, top_origin,
-            col_w, HEADER_H
-        )
-        cell.fill.background()
-        cell.line.fill.solid(); cell.line.fill.fore_color.rgb = WHITE; cell.line.width = Pt(0.95)
-
-        # month text
-        tb = slide.shapes.add_textbox(
-            left_origin + SIDEBAR_W + m*col_w, top_origin,
-            col_w, HEADER_H
-        )
-        p = tb.text_frame.paragraphs[0]
-        p.text = d.strftime("%b %y")
-        p.font.bold = True
-        p.font.color.rgb = WHITE
-        p.font.size = Pt(18)
-        p.alignment = PP_ALIGN.CENTER
-        tb.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-
-    # ---------- Left sidebar as a REAL TABLE (resizable columns) ----------
-    tbl_rows = int(row_count + 1)      # + header row
-    tbl_cols = int(2)                  # Type, Workstream
+# -------- FULL EDITABLE TABLE (Type, Workstream, Jan..Dec) --------
+def build_full_editable_table(slide, year, groups, total_width, total_height):
+    """
+    Creates one table with:
+      - Row 0: header [Type, Workstream, Jan..Dec]
+      - Rows 1..N: body
+    Returns:
+      tbl_shape, tbl, month_cells (list of dict per month with left,width),
+      row_cells (list with top,height per row), first_month_left, last_month_right
+    """
+    rows = int(len(groups) + 1)
+    cols = int(2 + COL_COUNT)
 
     tbl_shape = slide.shapes.add_table(
-        tbl_rows, tbl_cols,
-        left_origin, top_origin,
-        SIDEBAR_W, HEADER_H + row_count*row_h
+        rows, cols,
+        LEFT_PAD, TOP_PAD,
+        total_width, total_height
     )
     tbl = tbl_shape.table
+    tbl_shape.name = "RoadmapTable"  # handy name in case you add macros later
 
-    # header cells
+    # Column widths: set Type/Workstream fixed, distribute month area evenly.
     tbl.columns[0].width = TYPE_COL_W
     tbl.columns[1].width = WORK_COL_W
+    month_area_w = total_width - TYPE_COL_W - WORK_COL_W
+    base_w = int(month_area_w // COL_COUNT)
+    remainder = int(month_area_w - base_w * COL_COUNT)
+    for c in range(2, cols):
+        w = base_w + (remainder if c == cols-1 else 0)  # put remainder into last month col
+        tbl.columns[c].width = w
+
+    # Row heights
     tbl.rows[0].height = HEADER_H
-    for r in range(1, tbl_rows):
-        tbl.rows[r].height = row_h
+    body_h = total_height - HEADER_H
+    row_count = max(1, len(groups))
+    base_h = int(body_h // row_count)
+    leftover = int(body_h - base_h * row_count)
+    for r in range(1, rows):
+        h = base_h + (leftover if r == rows-1 else 0)
+        tbl.rows[r].height = h
 
-    # header text + border (white thin)
-    for c, title in enumerate(("Type", "Workstream")):
+    # Header row content + styling
+    headers = ["Type", "Workstream"] + [month_name(year, m) for m in range(1, 13)]
+    for c in range(cols):
         cell = tbl.cell(0, c)
-        cell.text = title
-        tf = cell.text_frame; p = tf.paragraphs[0]
-        p.font.bold = True; p.font.size = Pt(18); p.alignment = PP_ALIGN.CENTER
-        p.font.color.rgb = WHITE
-        set_cell_border(cell, left=BORDER_SPEC, right=BORDER_SPEC, top=BORDER_SPEC, bottom=BORDER_SPEC)
-        # fill header blue
-        hdr_shape = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            left_origin + (TYPE_COL_W if c==1 else 0),
-            top_origin,
-            TYPE_COL_W if c==0 else WORK_COL_W,
-            HEADER_H
-        )
-        hdr_shape.fill.solid(); hdr_shape.fill.fore_color.rgb = BLUE_HDR
-        hdr_shape.line.fill.solid(); hdr_shape.line.fill.fore_color.rgb = WHITE; hdr_shape.line.width = Pt(0.95)
-        # put header text in front
-        slide.shapes._spTree.remove(hdr_shape._element)
-        slide.shapes._spTree.insert(0, hdr_shape._element)
+        tf = cell.text_frame; tf.clear()
+        p = tf.paragraphs[0]; p.text = headers[c]
+        p.font.size = Pt(18); p.font.bold = True; p.font.color.rgb = WHITE
+        p.alignment = PP_ALIGN.CENTER; tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+        cell.fill.solid(); cell.fill.fore_color.rgb = BLUE_HDR
 
-    # sidebar body rows (alternating shade + borders + text)
-    for r, g in enumerate(groups, start=1):
-        type_txt, work_txt = g.split("\n")
-        for c, txt in enumerate((type_txt, work_txt.strip("()"))):
+    # Body cells + alternating row shading for ALL columns
+    for r, grp in enumerate(groups, start=1):
+        shade = ALT_ROW_1 if (r % 2 == 1) else ALT_ROW_2
+        type_txt, work_txt = grp.split("\n(", 1); work_txt = work_txt[:-1]
+        for c in range(cols):
             cell = tbl.cell(r, c)
-            cell.text = txt
-            p = cell.text_frame.paragraphs[0]
-            p.font.size = Pt(15)
-            p.alignment = PP_ALIGN.CENTER if c==0 else PP_ALIGN.LEFT
-            p.font.color.rgb = RGBColor(0,0,0)
-            # border
-            set_cell_border(cell, left=BORDER_SPEC, right=BORDER_SPEC, top=BORDER_SPEC, bottom=BORDER_SPEC)
-            # row shading under table (alternate)
-            fill_rect = slide.shapes.add_shape(
-                MSO_SHAPE.RECTANGLE,
-                left_origin + (0 if c==0 else TYPE_COL_W),
-                top_origin + HEADER_H + (r-1)*row_h,
-                (TYPE_COL_W if c==0 else WORK_COL_W),
-                row_h
-            )
-            fill_rect.fill.solid()
-            fill_rect.fill.fore_color.rgb = LIGHT_COL if (r-1)%2==0 else DARK_COL
-            fill_rect.line.fill.solid(); fill_rect.line.fill.fore_color.rgb = WHITE; fill_rect.line.width = Pt(0.95)
-            # send background rect behind table
-            slide.shapes._spTree.remove(fill_rect._element)
-            slide.shapes._spTree.insert(0, fill_rect._element)
+            tf = cell.text_frame; tf.clear()
+            if c == 0:   # Type
+                val = type_txt
+            elif c == 1: # Workstream
+                val = work_txt
+            else:
+                val = "" # month cells are empty background
+            p = tf.paragraphs[0]; p.text = val
+            p.font.size = Pt(15); p.font.color.rgb = BLACK
+            p.alignment = PP_ALIGN.CENTER; tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            cell.fill.solid(); cell.fill.fore_color.rgb = shade
 
-    # ---------- Body grid (date area) ----------
-    # alternating columns across date grid
-    for i in range(col_count):
-        for r in range(row_count):
-            rect = slide.shapes.add_shape(
-                MSO_SHAPE.RECTANGLE,
-                left_origin + SIDEBAR_W + i*col_w,
-                top_origin + HEADER_H + r*row_h,
-                col_w, row_h
-            )
-            rect.fill.solid()
-            rect.fill.fore_color.rgb = LIGHT_COL if r%2==0 else DARK_COL
-            rect.line.fill.solid()
-            rect.line.fill.fore_color.rgb = WHITE
-            rect.line.width = Pt(0.95)
-            # send to back
-            slide.shapes._spTree.remove(rect._element)
-            slide.shapes._spTree.insert(0, rect._element)
+    # Precompute geometry from table cells for precise shape placement
+    # month_cells: index 0..11 => dict with 'left', 'width'
+    month_cells = []
+    for m in range(COL_COUNT):
+        month_col = 2 + m
+        left = tbl.cell(1, month_col).shape.left  # use first body row
+        width = tbl.cell(1, month_col).shape.width
+        month_cells.append({"left": left, "width": width})
+    first_month_left  = month_cells[0]["left"]
+    last_month_right  = month_cells[-1]["left"] + month_cells[-1]["width"]
 
-    # navy mid-row guide
-    for r in range(row_count):
-        y_center = top_origin + HEADER_H + r*row_h + (row_h/2)
-        ln = slide.shapes.add_shape(
-            MSO_CONNECTOR.STRAIGHT,
-            left_origin + SIDEBAR_W, y_center,
-            left_origin + SIDEBAR_W + chart_w, y_center
-        )
-        ln.line.fill.solid()
-        ln.line.fill.fore_color.rgb = NAVY
-        ln.line.width = Pt(0.5)
+    # row_cells: index 0..row_count-1 => dict with 'top', 'height'
+    row_cells = []
+    for r in range(len(groups)):
+        top  = tbl.cell(r+1, 2).shape.top     # use month column (consistent top)
+        height = tbl.cell(r+1, 2).shape.height
+        row_cells.append({"top": top, "height": height})
 
-    # ---------- Milestones (accurate within-month position) ----------
+    return tbl_shape, tbl, month_cells, row_cells, first_month_left, last_month_right
+
+def draw_row_center_lines(slide, row_cells, first_month_left, last_month_right):
+    """Thin navy line through the center of each row across month area."""
+    for rc in row_cells:
+        y = rc["top"] + rc["height"] / 2
+        ln = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, first_month_left, y,
+                                        last_month_right, y)
+        ln.line.fill.solid(); ln.line.fill.fore_color.rgb = NAVY_LINE; ln.line.width = Pt(0.5)
+
+def place_milestones_independent(slide, groups, subset_df, year, month_cells, row_cells):
+    """Drop stars/circles + labels as independent shapes using the table geometry at generation time."""
     shape_map = {"Regular": MSO_SHAPE.OVAL, "Major": MSO_SHAPE.STAR_5_POINT}
 
-    # map group -> row index for Y position
-    group_index = {g:i for i,g in enumerate(groups)}
+    for _, r in subset_df.iterrows():
+        dt = pd.to_datetime(r["Milestone Date"]).date()
+        if dt.year != year:
+            continue
 
-    for _, row in subset_df.iterrows():
-        dt = row["Milestone Date"]
-        month_idx = dt.month - 1
-        dim = monthrange(dt.year, dt.month)[1]
-        day_frac = (dt.day - 1) / (dim - 1) if dim > 1 else 0.0
+        # locate the month cell and within-cell x (accurate by day)
+        m_idx = dt.month - 1
+        xf = day_fraction(dt)  # 0..1
+        m_left = month_cells[m_idx]["left"]
+        m_width = month_cells[m_idx]["width"]
+        x_center = m_left + xf * m_width
 
-        # accurate X inside month
-        x = left_origin + SIDEBAR_W + month_idx*col_w + day_frac*col_w
-        # centered Y on its group row
-        irow = group_index[row["Group"]]
-        y = top_origin + HEADER_H + irow*row_h + row_h/2
+        # locate the row center for this group
+        group_label = f'{r["Type"]}\n({r["Workstream"]})'
+        try:
+            gi = groups.index(group_label)
+        except ValueError:
+            continue
+        rc = row_cells[gi]
+        y_center = rc["top"] + rc["height"] / 2
 
-        # choose shape & size
-        shp_type = shape_map.get(str(row.get("Milestone Type","Regular")).strip().title(), MSO_SHAPE.OVAL)
-        size = STAR_SIZE if shp_type == MSO_SHAPE.STAR_5_POINT else CIRCLE_SIZE
-        # center the marker
-        x_draw = x - size/2
-        y_draw = y - size/2
+        # marker
+        is_major = str(r.get("Milestone Type", "Regular")).strip().lower() == "major"
+        size = STAR_SIZE if is_major else CIRCLE_SIZE
+        half = size / 2.0
+        shp = slide.shapes.add_shape(shape_map["Major" if is_major else "Regular"],
+                                     x_center - half, y_center - half,
+                                     size, size)
+        shp.fill.solid()
+        shp.fill.fore_color.rgb = STATUS_COLORS.get(r["Milestone Status"], RGBColor(128,128,128))
+        shp.line.color.rgb = BLACK; shp.line.width = Pt(0.5)
+        # IMPORTANT: no locking, no grouping, no tags — user can freely move/resize later
 
-        shp = slide.shapes.add_shape(shp_type, x_draw, y_draw, size, size)
-        shp.fill.solid(); shp.fill.fore_color.rgb = STATUS_COLORS.get(str(row["Milestone Status"]), RGBColor(128,128,128))
-        shp.line.color.rgb = RGBColor(0,0,0)
+        # label (independent textbox)
+        add_textbox(slide, x_center + size + LBL_DX, y_center - LBL_DY,
+                    Inches(2.5), Inches(0.4), str(r["Milestone Title"]), size=12, align=PP_ALIGN.LEFT)
 
-        # label to right & slightly above
-        lbl = slide.shapes.add_textbox(x + Inches(0.1), y - Inches(0.12), Inches(2.2), Inches(0.35))
-        p = lbl.text_frame.paragraphs[0]
-        p.text = str(row["Milestone Title"])
-        p.font.size = Pt(12)
+def add_today_line(slide, year, month_cells, row_cells):
+    """Accurate current-date vertical dotted line (independent shape)."""
+    today = datetime.today().date()
+    if today.year != year:
+        return
+    dim = monthrange(today.year, today.month)[1]
+    frac = 0.5 if dim <= 1 else (today.day - 1) / (dim - 1)
+    m_idx = today.month - 1
+    m_left = month_cells[m_idx]["left"]
+    m_width = month_cells[m_idx]["width"]
+    x = m_left + frac * m_width
 
-    # ---------- Today dotted line (only for this year) ----------
-    today = date.today()
-    if today.year == year:
-        days_in_month = monthrange(today.year, today.month)[1]
-        month_idx = today.month - 1
-        day_frac = (today.day - 1) / (days_in_month - 1) if days_in_month > 1 else 0.0
-        xpos = left_origin + SIDEBAR_W + (month_idx + day_frac)*col_w
-        conn = slide.shapes.add_shape(
-            MSO_CONNECTOR.STRAIGHT,
-            xpos, top_origin + HEADER_H,
-            xpos, top_origin + HEADER_H + chart_h
-        )
-        conn.line.fill.solid()
-        conn.line.fill.fore_color.rgb = GREEN_DOT
-        conn.line.width = Pt(2)
-        conn.line.dash_style = MSO_LINE_DASH_STYLE.ROUND_DOT
+    top = row_cells[0]["top"] if row_cells else TOP_PAD + HEADER_H
+    bottom = row_cells[-1]["top"] + row_cells[-1]["height"] if row_cells else top
+    ln = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, x, top, x, bottom)
+    ln.line.fill.solid(); ln.line.fill.fore_color.rgb = TODAY_GRN
+    ln.line.width = Pt(2); ln.line.dash_style = MSO_LINE_DASH_STYLE.ROUND_DOT
 
-    # ---------- Footer small page tag ----------
-    foot = slide.shapes.add_textbox(Inches(0.3), prs.slide_height - Inches(0.4), Inches(5), Inches(0.3))
-    p = foot.text_frame.paragraphs[0]
-    p.text = f"TM-US Roadmap — {year}  •  Page {page_no}/{total_pages}"
-    p.font.size = Pt(10)
-    p.alignment = PP_ALIGN.LEFT
+# -------------- build one slide --------------
+def build_slide(prs, df_page, year, page_no, total_pages):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    build_legend(slide)
 
+    # compute table size
+    total_width  = Inches(SLIDE_W_IN) - LEFT_PAD - RIGHT_PAD
+    total_height = Inches(SLIDE_H_IN) - TOP_PAD - BOTTOM_PAD
 
-# ---------- 5) PAGINATE BY YEAR, 30 PER SLIDE ----------
-prs = Presentation()
-prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    groups = list(dict.fromkeys(df_page["Type"].astype(str) + "\n(" + df_page["Workstream"].astype(str) + ")"))
+    row_count = max(1, len(groups))
+    # keep rows within vertical space: distribute evenly, but don't exceed min row height too badly
+    body_h = total_height - HEADER_H
+    row_h = max(ROW_H_MIN * 0.6, min(ROW_H_MIN, body_h / row_count))  # soft clamp
+    # recompute total height to match row_h integral layout
+    total_height = HEADER_H + row_h * row_count
 
-for year in sorted(df["Year"].unique()):
-    df_year = df[df["Year"] == year].copy()
+    # build one full editable table
+    tbl_shape, tbl, month_cells, row_cells, first_month_left, last_month_right = build_full_editable_table(
+        slide, year, groups, total_width, total_height
+    )
 
-    # Ordered groups for this year (already sorted above)
-    groups_year = list(dict.fromkeys(df_year["Group"]))
-    # chunk into pages
-    pages = [groups_year[i:i+MAX_ROWS] for i in range(0, len(groups_year), MAX_ROWS)]
-    total_pages = max(1, len(pages))
+    # navy guides
+    draw_row_center_lines(slide, row_cells, first_month_left, last_month_right)
 
-    for idx, group_slice in enumerate(pages, start=1):
-        # -------- FIX for earlier '.isin' error: build a mask then index ----------
-        mask = (df_year["Type"].astype(str) + "\n(" + df_year["Workstream"].astype(str) + ")").isin(group_slice)
-        sub = df_year[mask].copy()
+    # milestones (independent)
+    place_milestones_independent(slide, groups, df_page, year, month_cells, row_cells)
 
-        # keep milestone rows in page group order (stable)
-        order_index = {g:i for i,g in enumerate(group_slice)}
-        sub["_gidx"] = sub["Group"].map(order_index)
-        sub = sub.sort_values(by=["_gidx", "Milestone Date"], kind="stable").drop(columns="_gidx")
+    # today's line
+    add_today_line(slide, year, month_cells, row_cells)
 
-        build_slide(prs, sub, year, idx, total_pages)
+    # footer
+    add_textbox(slide, LEFT_PAD, Inches(SLIDE_H_IN) - BOTTOM_PAD, Inches(10), Inches(0.3),
+                f"Roadmap — {year}  (Page {page_no}/{total_pages})", size=10, color=RGBColor(80,80,80))
 
-# ---------- 6) SAVE ----------
-prs.save(OUT_PPTX)
-print("Saved:", OUT_PPTX)
+# -------------- main --------------
+def main():
+    df = pd.read_excel(INPUT_XLSX)
+
+    # required columns
+    needed = {"Type","Workstream","Milestone Title","Milestone Date","Milestone Status","Milestone Type"}
+    missing = needed - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing columns in Excel: {missing}")
+
+    df["Milestone Date"] = pd.to_datetime(df["Milestone Date"], errors="coerce")
+    df = df.dropna(subset=["Milestone Date"]).copy()
+    df["Year"] = df["Milestone Date"].dt.year
+    df["Group"] = df["Type"].astype(str) + "\n(" + df["Workstream"].astype(str) + ")"
+
+    # sort: Type bucket → Type → Workstream → date
+    df["type_key"] = df["Type"].astype(str).map(normalize_text)
+    df["work_key"] = df["Workstream"].astype(str).map(normalize_text)
+    df["type_bucket"] = df["Type"].astype(str).map(type_bucket)
+    df = df.sort_values(by=["type_bucket", "type_key", "work_key", "Milestone Date"], kind="stable")
+
+    prs = Presentation()
+    prs.slide_width  = Inches(SLIDE_W_IN)
+    prs.slide_height = Inches(SLIDE_H_IN)
+
+    for year in sorted(df["Year"].dropna().unique()):
+        df_year = df[df["Year"] == year].copy()
+
+        # paginate by distinct groups (30 per slide)
+        all_groups = list(dict.fromkeys(df_year["Group"]))
+        pages = [all_groups[i:i+ROWS_PER_PAGE] for i in range(0, len(all_groups), ROWS_PER_PAGE)]
+        total_pages = max(1, len(pages))
+
+        if not pages:
+            # build an empty scaffold slide so the year still appears
+            build_slide(prs, df_year.head(0), year, 1, 1)
+            continue
+
+        for idx, group_slice in enumerate(pages, start=1):
+            mask = df_year["Group"].isin(group_slice)
+            sub = df_year[mask].copy()
+
+            # keep milestones ordered by the page's group order, then by date
+            order_index = {g:i for i,g in enumerate(group_slice)}
+            sub["_gidx"] = sub["Group"].map(order_index)
+            sub = sub.sort_values(by=["_gidx", "Milestone Date"], kind="stable").drop(columns="_gidx")
+
+            build_slide(prs, sub, year, idx, total_pages)
+
+    prs.save(OUT_PPTX)
+    print("Saved:", OUT_PPTX)
+
+if __name__ == "__main__":
+    main()
