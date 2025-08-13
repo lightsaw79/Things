@@ -1,85 +1,81 @@
 #!/bin/ksh
-# -----------------------------------------------------------------------------
-# autosys_hourly_controller.ksh
-# Controller job to:
-#   1) Call autosys_get_status.ksh for <BOX_NAME>
-#   2) Call autosys_reset.ksh for <BOX_NAME> (sets box INACTIVE)
-#   3) Force start the box immediately
-# -----------------------------------------------------------------------------
+# controller_inline_drain.ksh
+# Usage:
+#   controller_inline_drain.ksh <BOX_NAME> [<DATE_LIST>]
+# Example:
+#   controller_inline_drain.ksh TML_DUMMY_TEST_BOX "2025-03-11,2025-03-12,2025-03-14,2025-03-14"
+#
+# Notes:
+# - <DATE_LIST> is a placeholder list; we are NOT passing dates to Autosys.
+#   We just use the list to decide how many times to inactivate + force-start.
+# - Uses your org paths if set: $AUTOSYS_RESET_DIR and $MODEL_BATCH_LOGFILES_DIR.
 
-# --- Environment file check ---
-export ENV_FILE=/apps/samd/actimize/package_utilities/common/config/sam8.env
-if [ ! -f "$ENV_FILE" ]; then
-  echo "ERROR: ENV_FILE not found: $ENV_FILE" >&2
-  exit 90
-fi
-. "$ENV_FILE"
+box_name="$1"
+BDATES="${2:-${BDATES:-}}"
 
-# --- Arguments ---
-BOX_NAME=$1
-APP_ID=$2
-BUS_DATE_PARAM=$3
-CATEGORY_ID=1
+# Default log dir if your env var isn't set
+LOGDIR="${MODEL_BATCH_LOGFILES_DIR:-/tmp}"
 
-SCRIPT_NAME=`basename $0 | cut -d'.' -f1`
-TIMESTAMP=`date +"%Y%m%d%H%M%S"`
+# --- helpers (lean) ---
+get_status() {
+  if [ -x "${AUTOSYS_RESET_DIR}/autorep.sh" ]; then
+    "${AUTOSYS_RESET_DIR}/autorep.sh" -q "$box_name" 2>/dev/null | awk 'NR==2{print $3}'
+  else
+    autorep -J "$box_name" -q 2>/dev/null | awk 'NR==2{print $3}'
+  fi
+}
 
-# --- Logs ---
-CTRL_LOG="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.log"
-CTRL_ERR="${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_ctrl_${TIMESTAMP}.err.log"
+consume_next_date() {
+  # Drop first token (comma/space separated)
+  BDATES=$(echo "${BDATES}" | sed 's/^[^ ,]*[ ,]*//')
+}
 
-# --- Paths ---
-GET_STATUS_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_get_status.ksh
-RESET_SH=${AUTOSYS_COMMON_BIN_DIR}/autosys_reset.ksh
-SENDEVENT_BIN=${AUTOSYS_RESET_DIR}/sendevent
+# Inline "my force-start": INACTIVE -> FORCE_STARTJOB (your exact pattern)
+force_start_now() {
+  # Make INACTIVE
+  "${AUTOSYS_RESET_DIR}/sendevent" -p 1 -E CHANGE_STATUS -s INACTIVE -J "${box_name}" \
+    > "${LOGDIR}/${box_name}_inactive.log" 2>&1
+  # FORCE START
+  "${AUTOSYS_RESET_DIR}/sendevent" -E FORCE_STARTJOB -J "${box_name}" \
+    > "${LOGDIR}/${box_name}.log" 2>&1
+}
 
-# --- Debug & binary existence patch ---
-echo "DEBUG ENV: AUTOSYS_COMMON_BIN_DIR=$AUTOSYS_COMMON_BIN_DIR" | tee -a "$CTRL_LOG"
-echo "DEBUG ENV: AUTOSYS_RESET_DIR=$AUTOSYS_RESET_DIR"           | tee -a "$CTRL_LOG"
-echo "DEBUG PATHS: GET_STATUS_SH=$GET_STATUS_SH"                 | tee -a "$CTRL_LOG"
-echo "DEBUG PATHS: RESET_SH=$RESET_SH"                           | tee -a "$CTRL_LOG"
+# ---------------- MAIN (drain remaining dates) ----------------
+# Loop until date list is empty. Between runs, wait for RUNNING to finish.
+while : ; do
+  STATUS="$(get_status)"
 
-[ -x "$GET_STATUS_SH" ] || { echo "ERROR: missing $GET_STATUS_SH" | tee -a "$CTRL_ERR"; exit 91; }
-[ -x "$RESET_SH"     ] || { echo "ERROR: missing $RESET_SH"       | tee -a "$CTRL_ERR"; exit 92; }
-[ -x "$SENDEVENT_BIN" ] || { echo "ERROR: missing $SENDEVENT_BIN" | tee -a "$CTRL_ERR"; exit 93; }
+  case "$STATUS" in
+    RUNNING|ACTIVATED)
+      sleep 60
+      continue
+      ;;
 
-# --- Audit start ---
-fx_sam8_odm_event_log $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 93 1 "Execution Started $SCRIPT_NAME for $BOX_NAME"
-CHKDOMBATCHSCHEDULESTART "$APP_ID" "$CATEGORY_ID" "$BUS_DATE_PARAM" "$CALNDR_CD" "$RE_RUN_OVERRIDE" "$RE_RUN_MSG" "$GLBL_OVERRIDE" "$GLBL_RE_RUN_MSG"
+    SUCCESS)
+      # If there are remaining dates, trigger next run; else finish.
+      if [ -n "${BDATES}" ]; then
+        force_start_now
+        consume_next_date
+        sleep 5
+        continue
+      else
+        # All requested dates covered; mark controller success.
+        exit 0
+      fi
+      ;;
 
-# --- 1) Get status ---
-echo "`date '+%Y-%m-%d %H:%M:%S'` | Calling autosys_get_status.ksh ..." | tee -a "$CTRL_LOG"
-$GET_STATUS_SH "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM" >>"$CTRL_LOG" 2>>"$CTRL_ERR"
-RC=$?
-if [ $RC -ne 0 ]; then
-  LogError $APP_ID $RC "$SCRIPT_NAME | autosys_get_status.ksh failed (RC=$RC)"
-  CHKDOMBATCHSCHEDULEEND "$APP_ID" "$BUS_DATE_PARAM"
-  exit 11
-fi
+    FAILURE|TERMINATED|INACTIVE|ON_HOLD|ON_ICE|'')
+      # Not running and not success -> kick it off for the current/next date
+      force_start_now
+      sleep 5
+      continue
+      ;;
 
-# --- 2) Reset ---
-echo "`date '+%Y-%m-%d %H:%M:%S'` | Calling autosys_reset.ksh ..." | tee -a "$CTRL_LOG"
-$RESET_SH "$BOX_NAME" "$APP_ID" "$BUS_DATE_PARAM" >>"$CTRL_LOG" 2>>"$CTRL_ERR"
-RC=$?
-if [ $RC -ne 0 ]; then
-  LogError $APP_ID $RC "$SCRIPT_NAME | autosys_reset.ksh failed (RC=$RC)"
-  CHKDOMBATCHSCHEDULEEND "$APP_ID" "$BUS_DATE_PARAM"
-  exit 12
-fi
-
-# --- 3) Start the box ---
-echo "`date '+%Y-%m-%d %H:%M:%S'` | Submitting START for [$BOX_NAME]" | tee -a "$CTRL_LOG"
-$SENDEVENT_BIN -P 1 -E STARTJOB -J ${BOX_NAME} > ${MODEL_BATCH_LOGFILES_DIR}/${BOX_NAME}_start_${TIMESTAMP}.log 2>&1
-RC=$?
-if [ $RC -ne 0 ]; then
-  LogError $APP_ID $RC "$SCRIPT_NAME | STARTJOB ${BOX_NAME} failed (RC=$RC)"
-  CHKDOMBATCHSCHEDULEEND "$APP_ID" "$BUS_DATE_PARAM"
-  exit 13
-fi
-echo "`date '+%Y-%m-%d %H:%M:%S'` | STARTJOB submitted for [$BOX_NAME]" | tee -a "$CTRL_LOG"
-
-# --- Audit end ---
-CHKDOMBATCHSCHEDULEEND "$APP_ID" "$BUS_DATE_PARAM"
-fx_sam8_odm_event_log $APP_ID $CATEGORY_ID $BUS_DATE_PARAM 94 1 "Execution End $SCRIPT_NAME for $BOX_NAME"
-
-exit 0
+    *)
+      # Any other unexpected state -> same recovery
+      force_start_now
+      sleep 5
+      continue
+      ;;
+  esac
+done
