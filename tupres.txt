@@ -1,0 +1,46 @@
+	•	Verify that selected tabs in the datasheet match the database or compare two databases (e.g., SIT vs UAT).
+	•	Uses a simple “concat & compare” key per row to detect mismatches.
+	•	Outputs a clean Excel report with full-row details for any differences
+
+Normalize to text: every selected column is converted to text
+	•	3.0 → "3", 2.5 → "2.5", blanks/NaN → ""
+	•	Concatenate those text values per row → Concatenated key
+	•	Compare keys across sides:
+	•	DB vs Datasheet: skip sheet rows where Version ends with -deleted
+	•	DB vs DB: same SQL on both environments; compare keys
+	•	Special rules
+	•	Thresholds: skip first two DB columns when building key
+	•	ABC: ignore sheet columns A–C; start from D (Concatenated) onward
+
+Select environment (SIT_STG / SIT_CDS / UAT_STG / UAT_CDS / PROD) and enter credentials.
+	2.	Provide path to the master Excel datasheet.
+	3.	Select sheets: 0 = all or choose by numbers from the menu.
+	4.	SQL comes from hard-coded SQL_QUERIES (no pasting needed).
+	5.	Choose export folder & filename for the report.
+	6.	Tool normalizes to text, skips Version rows ending -deleted, applies per-sheet rules, compares, and saves the Excel.
+
+Tip box: The console prints the full path to the saved file.
+
+⸻
+
+
+•	<Sheet>_MismatchDetails
+	•	MismatchType (e.g., Sheet only, DB only, or UAT only/SIT only)
+	•	All columns used in the concatenation
+	•	Exact keys: DB_Concatenation and Sheet_Concatenation (or env-specific keys in DB-vs-DB)
+	•	<Sheet>_SheetDupes — duplicate keys within the sheet (if any)
+	•	<Sheet>_DBDupes — duplicate keys within the DB result (if any)
+	•	Final console message shows the exact save path to the .xlsx
+
+
+
+Slide 4 — How to Run: Mode 2 (DB vs DB)
+
+Title: Mode 2 — Database vs Database (e.g., SIT vs UAT)
+Body (numbered steps):
+	1.	Pick first environment (e.g., SIT), enter credentials.
+	2.	Pick second environment (e.g., UAT), enter credentials.
+	3.	Select sheets: 0 = all or choose by numbers from the menu.
+	4.	Same hard-coded SQL is executed on both environments.
+	5.	Choose export folder & filename.
+	6.	Tool normalizes, concatenates, compares keys, and saves the report.
