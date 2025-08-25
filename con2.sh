@@ -28,28 +28,31 @@ mins_until_next_start() {
   if [ $now -lt $tgt ]; then echo $((tgt - now)); else echo $((24*60 - now + tgt)); fi
 }
 
+# writes: ${MODEL_BATCH_LOGFILES_DIR}/${box_name}_get_status.log
 refresh_status_log() {
-  _tmp="${STATUS_LOG}.$$"
-  "${AUTOSYS_RESET_DIR}/autorep.sh" -q "$box_name" > "${_tmp}" 2>&1
-  echo "TS=$(date +'%Y-%m-%d %H:%M:%S')" >> "${_tmp}"
-  mv "${_tmp}" "${STATUS_LOG}"
+  _tmp="${MODEL_BATCH_LOGFILES_DIR}/${box_name}_get_status.log.$$"
+  "${AUTOSYS_RESET_DIR}/autorep.sh" -w -J "$box_name" > "${_tmp}" 2>&1
+  mv "${_tmp}" "${MODEL_BATCH_LOGFILES_DIR}/${box_name}_get_status.log"
 }
+
+# returns RU/AC/SU/FA/IN/OH/OI/TE (reads the row whose Job Name == box_name)
 get_status_code() {
   refresh_status_log
-  tr -d '\r' < "$STATUS_LOG" | awk -v box="$box_name" '
-    BEGIN{ st=0; code_first="" }
-    /ST\/Ex/ { st=index($0,"ST/Ex"); next }
-    st>0 && $0 !~ /^[-= ]*$/ {
-      name=substr($0,1,st-1); gsub(/^ +| +$/,"",name)
-      c=substr($0,st,2); gsub(/[^A-Za-z]/,"",c); c=toupper(c)
-      if (toupper(name)==toupper(box)) { print c; exit }
-      if (code_first=="") code_first=c
-    }
-    END{ if (code_first!="") print code_first }
-  '
+  tr -d '\r' < "${MODEL_BATCH_LOGFILES_DIR}/${box_name}_get_status.log" \
+  | awk -v box="$box_name" '
+      /ST\/Ex/ { st=index($0,"ST/Ex"); next }
+      st>0 && $0 !~ /^[-= ]*$/ {
+        name=substr($0,1,st-1); gsub(/^ +| +$/,"",name)
+        if (toupper(name)==toupper(box)) {
+          c=substr($0,st,2); gsub(/[^A-Za-z]/,"",c)
+          print toupper(c); exit
+        }
+      }'
 }
+
+
 S="$(get_status_code)"
-echo "$(date +'%F %T') CODE=[$S]" >> "${MODEL_BATCH_LOGFILES_DIR}/${box_name}_ctl.debug"
+echo "$(date +'%F %T') CODE=[$S]"
 
 force_start_now() {
   "${AUTOSYS_RESET_DIR}/sendevent" -E FORCE_STARTJOB -J "$box_name" \
