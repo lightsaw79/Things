@@ -34,19 +34,21 @@ refresh_status_log() {
   echo "TS=$(date +'%Y-%m-%d %H:%M:%S')" >> "${_tmp}"
   mv "${_tmp}" "${STATUS_LOG}"
 }
-
 get_status_code() {
   refresh_status_log
-  awk -v box="$box_name" '
+  tr -d '\r' < "$STATUS_LOG" | awk -v box="$box_name" '
+    BEGIN{ st=0; code_first="" }
     /ST\/Ex/ { st=index($0,"ST/Ex"); next }
-    st>0 && $0 !~ /^[- ]*$/ {
+    st>0 && $0 !~ /^[-= ]*$/ {
       name=substr($0,1,st-1); gsub(/^ +| +$/,"",name)
-      if (name==box) {
-        c=substr($0,st,2); gsub(/[^A-Za-z]/,"",c)
-        print toupper(c); exit
-      }
-    }' "${STATUS_LOG}"
+      c=substr($0,st,2); gsub(/[^A-Za-z]/,"",c); c=toupper(c)
+      if (toupper(name)==toupper(box)) { print c; exit }
+      if (code_first=="") code_first=c
+    }
+    END{ if (code_first!="") print code_first }
+  '
 }
+
 
 force_start_now() {
   "${AUTOSYS_RESET_DIR}/sendevent" -E FORCE_STARTJOB -J "$box_name" \
