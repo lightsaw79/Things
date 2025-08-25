@@ -48,7 +48,8 @@ get_status_code() {
     END{ if (code_first!="") print code_first }
   '
 }
-
+S="$(get_status_code)"
+echo "$(date +'%F %T') CODE=[$S]" >> "${MODEL_BATCH_LOGFILES_DIR}/${box_name}_ctl.debug"
 
 force_start_now() {
   "${AUTOSYS_RESET_DIR}/sendevent" -E FORCE_STARTJOB -J "$box_name" \
